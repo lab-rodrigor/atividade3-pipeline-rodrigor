@@ -1,17 +1,14 @@
 name: deploy
 
-# O pipeline faz o que você fez à mão na atividade 2. A cada push na main, ele
-# derruba a topologia e sobe de novo, do zero.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
 env:
-  # TODO: troque pelo seu slug, o começo do seu e-mail com ponto virando hífen.
-  SLUG: SEU-SLUG
-  # TODO: a primeira porta da sua faixa. Veja em `gr-docker ajuda`.
-  PORTA: 230N0
+  SLUG: rodrigor
+  PORTA: 23000
+  SERVIDOR: gr.lab.ayty.org
 
 jobs:
   deploy:
@@ -24,28 +21,40 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/deploy
           chmod 600 ~/.ssh/deploy
-          ssh-keyscan -H gr.lab.ayty.org >> ~/.ssh/known_hosts
+          ssh-keyscan -H "$SERVIDOR" >> ~/.ssh/known_hosts 2>/dev/null
+          echo 'alias' >/dev/null
 
       - name: Derrubar a topologia antiga
         run: |
-          # TODO: apague os três containers, se existirem.
-          # Dica: o passo não pode falhar quando eles ainda não existem.
-          echo "TODO"
+          for c in front api banco; do
+            ssh -i ~/.ssh/deploy "gr-$SLUG@$SERVIDOR" gr-docker rm "$c" || true
+          done
 
       - name: Criar rede e volume
         run: |
-          # TODO: as duas redes e o volume. A rede do banco é interna.
-          # Dica: criar o que já existe devolve erro. Trate isso.
-          echo "TODO"
+          ssh -i ~/.ssh/deploy "gr-$SLUG@$SERVIDOR" gr-docker network create dados --interna || true
+          ssh -i ~/.ssh/deploy "gr-$SLUG@$SERVIDOR" gr-docker network create web || true
+          ssh -i ~/.ssh/deploy "gr-$SLUG@$SERVIDOR" gr-docker volume create pgdata || true
 
       - name: Subir banco, API e front
         run: |
-          # TODO: os três containers, na ordem certa.
-          # O front precisa receber o commit que o deploy publicou:
-          #   -e DEPLOY_SHA=${{ github.sha }}
-          echo "TODO"
+          S="gr-$SLUG@$SERVIDOR"
+          ssh -i ~/.ssh/deploy "$S" gr-docker run postgres:17-alpine --name banco \
+            --network dados -v pgdata:/var/lib/postgresql/data \
+            -e POSTGRES_PASSWORD=${{ secrets.DB_SENHA }} -e POSTGRES_DB=pokedex
+          ssh -i ~/.ssh/deploy "$S" gr-docker run gr-atv2-api:1 --name api --network dados \
+            -e POSTGRES_HOST=gr-$SLUG-banco -e POSTGRES_DB=pokedex \
+            -e POSTGRES_PASSWORD=${{ secrets.DB_SENHA }}
+          ssh -i ~/.ssh/deploy "$S" gr-docker network connect web api
+          ssh -i ~/.ssh/deploy "$S" gr-docker run gr-atv2-front:1 --name front --network web \
+            -e API=gr-$SLUG-api -e DEPLOY_SHA=${{ github.sha }} -p $PORTA:80
 
       - name: Conferir que subiu
         run: |
-          # TODO: pergunte ao servidor se a listagem responde.
-          echo "TODO"
+          for i in $(seq 1 20); do
+            if curl -fsS "http://$SERVIDOR:$PORTA/api/pokemons" | grep -q Pikachu; then
+              echo "listagem respondendo"; exit 0
+            fi
+            sleep 5
+          done
+          echo "a listagem nao respondeu"; exit 1
